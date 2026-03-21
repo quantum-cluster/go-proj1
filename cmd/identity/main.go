@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net"
 	"os"
@@ -18,6 +19,8 @@ import (
 
 	jwt "github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/quantum-cluster/go-proj1/internal/interceptor"
 
 	pb "github.com/quantum-cluster/go-proj1/protos/identity/v1"
@@ -25,6 +28,7 @@ import (
 
 type identityServer struct {
 	pb.UnimplementedIdentityServiceServer
+	db *pgxpool.Pool
 }
 
 type User struct {
@@ -35,15 +39,19 @@ type User struct {
 }
 
 var (
-	// Our temporary DB until we connect it to a real DB.
-	tempDB map[string]User = map[string]User{}
-
 	// Our server secret that will be moved to a different file which will not be commited to Git.
 	serverSecret = "not a real secret"
 
 	// Dummy hash
 	dummyHash []byte
 )
+
+func InitPool(databaseURL string) (*pgxpool.Pool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	return pgxpool.New(ctx, databaseURL)
+}
 
 func init() {
 	var err error
@@ -62,7 +70,14 @@ func main() {
 	grpcServer := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(interceptors...),
 	)
-	pb.RegisterIdentityServiceServer(grpcServer, &identityServer{})
+
+	pool, err := InitPool("postgres://postgres:postgres@localhost:5432/postgres")
+	if err != nil {
+		log.Default().Fatalf("Can't connect to DB: %v", err)
+	}
+	defer pool.Close()
+
+	pb.RegisterIdentityServiceServer(grpcServer, &identityServer{db: pool})
 
 	listener, err := net.Listen("tcp", ":50051")
 	if err != nil {
@@ -105,13 +120,10 @@ func (is *identityServer) Register(ctx context.Context, req *pb.RegisterRequest)
 
 	uniqueId := uuid.New().String()
 
-	newUser := &User{
-		id:             uniqueId,
-		email:          email,
-		hashedPassword: hashedPassword,
-		fullName:       fullName,
+	_, execErr := is.db.Exec(ctx, "INSERT INTO users (id, email, hashed_password, full_name) VALUES ($1, $2, $3, $4)", uniqueId, email, hashedPassword, fullName)
+	if execErr != nil {
+		return nil, status.Error(codes.Internal, "Couldn't insert user into DB")
 	}
-	tempDB[email] = *newUser
 
 	return &pb.RegisterResponse{
 		Uuid: uniqueId,
@@ -126,15 +138,21 @@ func (is *identityServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.
 		return nil, status.Error(codes.InvalidArgument, "Invalid arguments passed")
 	}
 
-	user, ok := tempDB[email]
-	if !ok {
+	user := User{}
+	userRow := is.db.QueryRow(ctx, "SELECT id, email, hashed_password, full_name FROM users WHERE email = $1", email)
+	userRowErr := userRow.Scan(&user.id, &user.email, &user.hashedPassword, &user.fullName)
+	if errors.Is(userRowErr, pgx.ErrNoRows) {
 		user = User{
 			id:             uuid.NewString(),
 			hashedPassword: dummyHash,
 		}
+
+		userRowErr = nil
+	} else if userRowErr != nil {
+		return nil, status.Error(codes.Internal, "Database error during login")
 	}
 
-	if err := bcrypt.CompareHashAndPassword(user.hashedPassword, []byte(password)); err != nil || !ok {
+	if err := bcrypt.CompareHashAndPassword(user.hashedPassword, []byte(password)); err != nil || userRowErr != nil {
 		return nil, status.Error(codes.Unauthenticated, "incorrect username or password")
 	}
 
