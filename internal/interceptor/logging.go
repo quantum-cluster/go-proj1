@@ -2,23 +2,36 @@ package interceptor
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/status"
 )
 
-func LoggingInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-	start := time.Now()
+// UnaryLoggingInterceptor returns a new unary server interceptor that logs request details.
+func UnaryLoggingInterceptor(logger *slog.Logger) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		start := time.Now()
 
-	resp, err := handler(ctx, req)
+		resp, err := handler(ctx, req)
 
-	duration := time.Since(start)
+		duration := time.Since(start)
+		st, _ := status.FromError(err)
 
-	st, _ := status.FromError(err)
+		attrs := []any{
+			slog.String("method", info.FullMethod),
+			slog.String("status", st.Code().String()),
+			slog.Duration("duration", duration),
+		}
 
-	log.Printf("RPC: %s | Status: %s | Duration: %s", info.FullMethod, st.Code(), duration)
+		if err != nil {
+			attrs = append(attrs, slog.Any("error", err))
+			logger.Error("RPC failed", attrs...)
+		} else {
+			logger.Info("RPC succeeded", attrs...)
+		}
 
-	return resp, err
+		return resp, err
+	}
 }
