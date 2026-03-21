@@ -2,9 +2,14 @@ package repository
 
 import (
 	"context"
+	"errors"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// ErrUserNotFound is a domain-specific error returned when a user is not found.
+var ErrUserNotFound = errors.New("user not found")
 
 // User represents a user model in the database
 type User struct {
@@ -39,6 +44,9 @@ func (r *pgUserRepository) GetUserByEmail(ctx context.Context, email string) (*U
 	err := r.db.QueryRow(ctx, "SELECT id, email, hashed_password, full_name FROM users WHERE email = $1", email).
 		Scan(&user.ID, &user.Email, &user.HashedPassword, &user.FullName)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrUserNotFound
+		}
 		return nil, err
 	}
 	return &user, nil

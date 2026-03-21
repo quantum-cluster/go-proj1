@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	"google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/quantum-cluster/go-proj1/internal/config"
@@ -23,27 +25,48 @@ import (
 func main() {
 	// Initialize Logger
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
 
+	// Handle Graceful Shutdown Context
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := run(ctx, logger); err != nil {
+		logger.Error("Application failed", slog.Any("error", err))
+		os.Exit(1)
+	}
+}
+
+func run(ctx context.Context, logger *slog.Logger) error {
 	// Load Configuration
 	cfg := config.Load()
 
 	// Initialize Interceptors
 	interceptors := []grpc.UnaryServerInterceptor{
+		interceptor.UnaryRecoveryInterceptor(logger),
 		interceptor.UnaryLoggingInterceptor(logger),
-		interceptor.AuthInterceptor,
+		interceptor.AuthInterceptor(logger),
 	}
 	grpcServer := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(interceptors...),
 	)
 
 	// Initialize Database Pool
-	ctxInit, cancelInit := context.WithTimeout(context.Background(), 5*time.Second)
+	ctxInit, cancelInit := context.WithTimeout(ctx, 5*time.Second)
 	defer cancelInit()
 
-	pool, err := pgxpool.New(ctxInit, cfg.DatabaseURL)
+	poolConfig, err := pgxpool.ParseConfig(cfg.DatabaseURL)
 	if err != nil {
-		logger.Error("Can't connect to DB", slog.Any("error", err))
-		os.Exit(1)
+		return err
+	}
+	poolConfig.MaxConns = 50
+	poolConfig.MinConns = 10
+	poolConfig.MaxConnLifetime = time.Hour
+	poolConfig.MaxConnIdleTime = 30 * time.Minute
+
+	pool, err := pgxpool.NewWithConfig(ctxInit, poolConfig)
+	if err != nil {
+		return err
 	}
 	defer pool.Close()
 
@@ -56,16 +79,16 @@ func main() {
 	// Register Service
 	pb.RegisterIdentityServiceServer(grpcServer, identityService)
 
+	// Initialize Health Server
+	healthServer := health.NewServer()
+	grpc_health_v1.RegisterHealthServer(grpcServer, healthServer)
+	healthServer.SetServingStatus("IdentityService", grpc_health_v1.HealthCheckResponse_SERVING)
+
 	// Start Listening
 	listener, err := net.Listen("tcp", ":"+cfg.GRPCPort)
 	if err != nil {
-		logger.Error("Can't listen", slog.Any("error", err))
-		os.Exit(1)
+		return err
 	}
-
-	// Handle Graceful Shutdown Context
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	var wg sync.WaitGroup
 
@@ -100,4 +123,5 @@ func main() {
 
 	wg.Wait()
 	logger.Info("Process complete")
+	return nil
 }

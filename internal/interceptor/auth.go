@@ -2,7 +2,7 @@ package interceptor
 
 import (
 	"context"
-	"log"
+	"log/slog"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -10,13 +10,16 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func AuthInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-	values := metadata.ValueFromIncomingContext(ctx, "authorization")
+// AuthInterceptor returns a new unary server interceptor that checks for authorization headers.
+func AuthInterceptor(logger *slog.Logger) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		values := metadata.ValueFromIncomingContext(ctx, "authorization")
 
-	if len(values) == 0 || values[0] != "Bearer secret-token" {
-		log.Println("Unauthenticated")
-		return nil, status.Errorf(codes.Unauthenticated, "...")
+		if len(values) == 0 || values[0] != "Bearer secret-token" {
+			logger.Warn("Unauthenticated request blocked")
+			return nil, status.Errorf(codes.Unauthenticated, "missing or invalid authorization token")
+		}
+
+		return handler(ctx, req)
 	}
-
-	return handler(ctx, req)
 }

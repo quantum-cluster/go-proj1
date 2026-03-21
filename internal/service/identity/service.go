@@ -8,7 +8,6 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -50,7 +49,7 @@ func (s *Service) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Re
 	password := req.Password
 	fullName := req.FullName
 
-	if len(email) == 0 || len(password) < 6 || len(fullName) == 0 {
+	if email == "" || len(password) < 6 || len(password) > 72 || fullName == "" {
 		return nil, status.Error(codes.InvalidArgument, "Invalid arguments passed")
 	}
 
@@ -60,7 +59,7 @@ func (s *Service) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Re
 		return nil, status.Error(codes.Internal, "Couldn't hash password successfully")
 	}
 
-	uniqueId := uuid.New().String()
+	uniqueId := uuid.NewString()
 
 	err = s.repo.CreateUser(ctx, uniqueId, email, hashedPassword, fullName)
 	if err != nil {
@@ -77,14 +76,14 @@ func (s *Service) Login(ctx context.Context, req *pb.LoginRequest) (*pb.LoginRes
 	email := req.Email
 	password := req.Password
 
-	if len(email) == 0 || len(password) < 6 {
+	if email == "" || len(password) < 6 || len(password) > 72 {
 		return nil, status.Error(codes.InvalidArgument, "Invalid arguments passed")
 	}
 
 	var user *repository.User
 	user, err := s.repo.GetUserByEmail(ctx, email)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, repository.ErrUserNotFound) {
 		user = &repository.User{
 			ID:             uuid.NewString(),
 			HashedPassword: dummyHash,
@@ -100,11 +99,13 @@ func (s *Service) Login(ctx context.Context, req *pb.LoginRequest) (*pb.LoginRes
 	}
 
 	// Access Token
-	claims := jwt.MapClaims{
-		"sub": user.ID,
-		"exp": time.Now().Add(15 * time.Minute).Unix(),
+	now := time.Now()
+	accessClaims := jwt.RegisteredClaims{
+		Subject:   user.ID,
+		ExpiresAt: jwt.NewNumericDate(now.Add(15 * time.Minute)),
+		IssuedAt:  jwt.NewNumericDate(now),
 	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
 	signedToken, err := token.SignedString([]byte(s.config.JWTSecret))
 	if err != nil {
 		s.logger.Error("Failed to sign access token", slog.Any("error", err))
@@ -112,11 +113,12 @@ func (s *Service) Login(ctx context.Context, req *pb.LoginRequest) (*pb.LoginRes
 	}
 
 	// Refresh Token
-	claims = jwt.MapClaims{
-		"sub": user.ID,
-		"exp": time.Now().Add(7 * 24 * time.Hour).Unix(),
+	refreshClaims := jwt.RegisteredClaims{
+		Subject:   user.ID,
+		ExpiresAt: jwt.NewNumericDate(now.Add(7 * 24 * time.Hour)),
+		IssuedAt:  jwt.NewNumericDate(now),
 	}
-	token = jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	token = jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
 	refreshToken, err := token.SignedString([]byte(s.config.JWTSecret))
 	if err != nil {
 		s.logger.Error("Failed to sign refresh token", slog.Any("error", err))

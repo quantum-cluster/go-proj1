@@ -1,6 +1,7 @@
 package config
 
 import (
+	"cmp"
 	"os"
 )
 
@@ -13,24 +14,9 @@ type Config struct {
 
 // Load loads the configuration from environment variables, using defaults if not set.
 func Load() *Config {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://postgres:postgres@localhost:5432/postgres" // default purely for dev
-	}
-
-	jwtSecret := os.Getenv("JWT_SECRET")
-	if jwtSecret == "" {
-		jwtSecret = "not a real secret" // default purely for dev
-	}
-
-	grpcPort := os.Getenv("GRPC_PORT")
-	if grpcPort == "" {
-		grpcPort = "50051" // default
-	}
-
 	return &Config{
-		DatabaseURL: dbURL,
-		JWTSecret:   jwtSecret,
-		GRPCPort:    grpcPort,
+		DatabaseURL: cmp.Or(os.Getenv("DATABASE_URL"), "postgres://postgres:postgres@localhost:5432/postgres"),
+		JWTSecret:   cmp.Or(os.Getenv("JWT_SECRET"), "not a real secret"),
+		GRPCPort:    cmp.Or(os.Getenv("GRPC_PORT"), "50051"),
 	}
 }
