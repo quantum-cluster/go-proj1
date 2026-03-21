@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-package protos.v1;
+package protos.identity.v1;
 
-option go_package = "github.com/quantum-cluster/go-proj1";
+option go_package = "github.com/quantum-cluster/go-proj1/protos/identity/v1";
 
 message RegisterRequest {
   string email = 1;
@@ -24,7 +24,7 @@ message LoginResponse {
   string refresh_token = 2;
 }
 
-service Identity {
+service IdentityService {
   rpc Register(RegisterRequest) returns (RegisterResponse) {}
   rpc Login(LoginRequest) returns (LoginResponse) {}
 }
